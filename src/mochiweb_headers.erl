@@ -192,9 +192,6 @@ delete_any(K, T) ->
 
 %% Internal API
 
--define(QUOTED_STRING_RE, "^\"([^\"\\\\]*?(\\\\.[^\"\\\\]*)*)\"").
--define(VALUE_RE, "^([^\s,\"]+)").
-
 tokenize_header_value(undefined, _) ->
     undefined;
 tokenize_header_value([], Tokens) ->
@@ -202,18 +199,14 @@ tokenize_header_value([], Tokens) ->
 tokenize_header_value([H|Rest], Tokens) when H =:= $\s orelse H =:= $, ->
     tokenize_header_value(Rest, Tokens);
 tokenize_header_value(V, Tokens) ->
-    QsMatches = re:run(V, ?QUOTED_STRING_RE),
+    QsMatches = match_quoted_string(V),
     case QsMatches of
-        {match, [{WholeStart, WholeLength}, {QSStart, QSLength} | _]} ->
-            Rest = string:substr(V, WholeStart + WholeLength + 1),
-            Token = string:substr(V, QSStart + 1, QSLength),
+        {Rest, Token} ->
             tokenize_header_value(Rest, Tokens ++ [Token]);
         _NoMatchedQs ->
-            ValueMatches = re:run(V, ?VALUE_RE),
+            ValueMatches = match_value(V),
             case ValueMatches of
-                {match, [{WholeStart, WholeLength}, {VStart, VLength}]} ->
-                    Rest = string:substr(V, WholeStart + WholeLength + 1),
-                    Token = string:substr(V, VStart + 1, VLength),
+                {Rest, Token} ->
                     tokenize_header_value(Rest, Tokens ++ [Token]);
                 _ ->
                     undefined
@@ -222,6 +215,40 @@ tokenize_header_value(V, Tokens) ->
 
 tokenize_header_value(V) ->
     tokenize_header_value(V, []).
+
+match_value([], []) ->
+    nomatch;
+match_value([], Token) ->
+    {[], Token};
+match_value([H|Rest], Token) when H =:= $\s orelse H =:= $, orelse H =:= $" ->
+    case Token of
+        [] ->
+            nomatch;
+        _ ->
+            {[H|Rest], Token}
+        end;
+match_value([H|Rest], Token) ->
+    match_value(Rest, Token ++ [H]).
+
+match_value(V) ->
+    match_value(V, []).
+
+match_quoted_string([], _) ->
+    nomatch;
+match_quoted_string([$"|Rest], Token) ->
+    {Rest, Token};
+match_quoted_string([$\\|Rest], Token) ->
+    [H|Rest1] = Rest,
+    Token1 = Token ++ [$\\, H],
+    match_quoted_string(Rest1, Token1);
+match_quoted_string([H|Rest], Token) ->
+    Token1 = Token ++ [H],
+    match_quoted_string(Rest, Token1).
+
+match_quoted_string([$"|Rest]) ->
+    match_quoted_string(Rest, "");
+match_quoted_string(_) ->
+    nomatch.
 
 expand({array, L}) ->
     mochiweb_util:join(lists:reverse(L), ", ");
@@ -398,6 +425,8 @@ tokenize_header_value_test() ->
     ?assertEqual(["\\a\\$"], tokenize_header_value("\"\\a\\$\"")),
     ?assertEqual(["abc def", "foo, bar", "12345", ""],
                  tokenize_header_value("\"abc def\" \"foo, bar\" , 12345, \"\"")),
+    ?assertEqual([],
+                 tokenize_header_value("")),
     ?assertEqual(undefined,
                  tokenize_header_value(undefined)),
     ?assertEqual(undefined,
